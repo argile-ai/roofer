@@ -58,7 +58,20 @@ namespace roofer::reconstruction {
     typedef T::Face_handle Face_handle;
     typedef std::pair<Face_handle, int> Edge;
 
-    typedef std::unordered_map<Vertex_handle, FaceInfo*> ConstraintMap;
+    // constraints in the order they were found: restoring them in a hash map's
+    // order, which follows memory addresses, can change the triangulation
+    struct ConstraintMap {
+      std::vector<std::pair<Vertex_handle, FaceInfo*>> items;
+      FaceInfo*& operator[](const Vertex_handle& vh) {
+        for (auto& [key, value] : items)
+          if (key == vh) return value;
+        items.emplace_back(vh, nullptr);
+        return items.back().second;
+      }
+      auto begin() { return items.begin(); }
+      auto end() { return items.end(); }
+      size_t size() const { return items.size(); }
+    };
 
     // tri_util::CDT triangulate_polygon(LinearRing& poly, float
     // dupe_threshold_exp=3) {
@@ -506,6 +519,9 @@ namespace roofer::reconstruction {
 
             std::unordered_map<Arrangement_2::Face_handle, float>
                 canidate_faces;
+            // candidates in the order they are met: ties go to the first one,
+            // not to whichever the hash map's address order puts first
+            std::vector<Arrangement_2::Face_handle> candidate_order;
             for (tri_util::CDT::Finite_faces_iterator fit =
                      cdt.finite_faces_begin();
                  fit != cdt.finite_faces_end(); ++fit) {
@@ -522,8 +538,9 @@ namespace roofer::reconstruction {
               if (auto f = std::get_if<Face_const_handle>(
                       &obj)) {  // located inside a face
                 // arrFace->data() = (*f)->data();
-                canidate_faces[arr.non_const_handle(*f)] +=
-                    cdt.triangle(fit).area();
+                auto fh = arr.non_const_handle(*f);
+                if (!canidate_faces.count(fh)) candidate_order.push_back(fh);
+                canidate_faces[fh] += cdt.triangle(fit).area();
               }
               // break;
             }
@@ -531,13 +548,10 @@ namespace roofer::reconstruction {
             // pick the candidate with the largest overlapping area
             // std::cerr << "Size=" << canidate_faces.size() << std::endl;
             if (canidate_faces.size()) {
-              auto best_face = std::max_element(
-                  canidate_faces.begin(), canidate_faces.end(),
-                  [](const std::pair<Arrangement_2::Face_handle, float>& p1,
-                     const std::pair<Arrangement_2::Face_handle, float>& p2) {
-                    return p1.second < p2.second;
-                  });
-              arrFace->data() = best_face->first->data();
+              auto best_face = candidate_order.front();
+              for (auto& fh : candidate_order)
+                if (canidate_faces[fh] > canidate_faces[best_face]) best_face = fh;
+              arrFace->data() = best_face->data();
             } else {
               std::cout << "Unable to locate overlapping triangle\n";
               arrFace->data().is_finite = true;
